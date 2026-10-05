@@ -1,3 +1,5 @@
+import { normalizeLatexMathDelimiters, promoteBracketDisplayMath } from "./markdown-math";
+
 interface MarkdownPosition {
   readonly start?: {
     readonly line?: number;
@@ -93,7 +95,11 @@ function parseRecoveredMarkdown(value: string, parser: MarkdownParser): Recovere
 
 function blocksFromIndentedCode(node: MarkdownAstNode, parser: MarkdownParser): RecoveredMarkdown {
   const value = typeof node.value === "string" ? node.value.trim() : "";
-  const recovered = parseRecoveredMarkdown(value, parser);
+  const recovered = parseRecoveredMarkdown(normalizeLatexMathDelimiters(value), parser);
+  promoteBracketDisplayMath(
+    { type: "root", children: recovered.blocks },
+    `${INLINE_PARSE_PREFIX}${value}`,
+  );
   const first = recovered.blocks[0];
   return {
     ...recovered,

@@ -1,7 +1,7 @@
 import { EnvironmentId } from "@t3tools/contracts";
 import { act, type ComponentProps, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { create, type ReactTestRenderer, type ReactTestInstance } from "react-test-renderer";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { getSyntaxHighlighterPromise } from "../lib/syntaxHighlighting";
@@ -945,5 +945,116 @@ describe("ChatMarkdown Windows file links", () => {
     expect(html).not.toContain("javascript:");
     expect(html).not.toContain("d:alert");
     expect(html).not.toContain("chat-markdown-file-link");
+  });
+});
+
+function mathNodeText(node: ReactTestInstance | string): string {
+  return typeof node === "string" ? node : node.children.map(mathNodeText).join("");
+}
+
+describe("ChatMarkdown math", () => {
+  it.each([true, false])(
+    "renders the kinetic energy derivation with raw HTML=%s",
+    async (parseRawHtml) => {
+      vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+      let renderer: ReactTestRenderer | undefined;
+      const formulas = [
+        String.raw`K=\frac12 mv^2 \qquad\text{and}\qquad p=mv.`,
+        String.raw`K=\frac12 m\left(\frac{p}{m}\right)^2 =\frac12 m\frac{p^2}{m^2} =\boxed{\frac{p^2}{2m}}.`,
+        String.raw`p=h/\lambda`,
+        String.raw`k=2\pi/\lambda`,
+      ];
+      const text = String.raw`Here **capital K means kinetic energy**.
+
+\[${formulas[0]}\]
+
+Then substitute:
+
+\[${formulas[1]}\]
+
+Momentum is \(${formulas[2]}\). The wave number is \(${formulas[3]}\).`;
+      try {
+        await act(async () => {
+          renderer = create(
+            <ChatMarkdown cwd={undefined} text={text} parseRawHtml={parseRawHtml} />,
+          );
+        });
+        expect(
+          renderer!.root.findAll((node) => String(node.type) === "annotation").map(mathNodeText),
+        ).toEqual(formulas);
+        expect(
+          renderer!.root.findAll((node) => String(node.type) === "mfrac").length,
+        ).toBeGreaterThan(0);
+        expect(renderer!.root.findAll((node) => String(node.type) === "merror")).toHaveLength(0);
+      } finally {
+        await act(async () => {
+          renderer?.unmount();
+        });
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it("finishes streamed math after a closed code fence and preserves task edits", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let renderer: ReactTestRenderer | undefined;
+    const prefix = "```text\ncode stays code\n```\n\n";
+    const onTaskListChange = vi.fn();
+    const message = (suffix: string) => (
+      <ChatMarkdown
+        cwd={undefined}
+        text={prefix + suffix}
+        isStreaming
+        onTaskListChange={onTaskListChange}
+      />
+    );
+    try {
+      await act(async () => {
+        renderer = create(message(String.raw`Energy \(K=\frac{p^2}{`));
+      });
+      expect(renderer!.root.findAll((node) => String(node.type) === "annotation")).toHaveLength(0);
+      const suffix = String.raw`Energy \(K=\frac{p^2}{2m}\).
+
+- [ ] check the result`;
+      await act(async () => {
+        renderer!.update(message(suffix));
+      });
+      expect(
+        renderer!.root.findAll((node) => String(node.type) === "annotation").map(mathNodeText),
+      ).toEqual([String.raw`K=\frac{p^2}{2m}`]);
+      await act(async () => {
+        const listItem = renderer!.root.findByType("li");
+        renderer!.root.findByType("input").props.onChange({
+          currentTarget: {
+            checked: true,
+            closest: () => ({
+              dataset: { taskMarkerOffset: listItem.props["data-task-marker-offset"] },
+            }),
+          },
+        });
+      });
+      expect(onTaskListChange).toHaveBeenCalledWith({
+        markerOffset: (prefix + suffix).indexOf("[ ]"),
+        checked: true,
+      });
+      await act(async () => {
+        renderer!.update(
+          message(
+            suffix +
+              String.raw`
+
+\[p=mv\]`,
+          ),
+        );
+      });
+      expect(
+        renderer!.root.findAll((node) => String(node.type) === "annotation").map(mathNodeText),
+      ).toEqual([String.raw`K=\frac{p^2}{2m}`, "p=mv"]);
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+      });
+      vi.unstubAllGlobals();
+    }
   });
 });
